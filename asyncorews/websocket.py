@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
+import re
 import asyncore
 import socket
 import struct
-import time
 from hashlib import sha1
 from base64 import encodestring
 
@@ -61,7 +61,18 @@ class WebSocketConnection(asyncore.dispatcher_with_send):
             headers["Location"] = "ws://" + headers["Host"] + path
 
             self.readystate = "open"
-            self.handler = self.server.handlers.get(path, None)(self)
+            # exact match
+            if path in self.server.handlers:
+                self.handler = self.server.handlers.get(path)(self)
+            # or the nearest wild card match
+            elif [s for s in self.server.handlers if re.match(s, path)]:
+                self.handler = self.server.handlers.get(
+                    sorted([s for s in self.server.handlers
+                            if re.match(s, path)])[-1]
+                )(self, path)
+
+            # TODO: Save all data required for later calls:
+            self.cookie = headers.get("Cookie", "")
 
             self.send_server_handshake_10(headers)
 
@@ -103,7 +114,7 @@ class WebSocketConnection(asyncore.dispatcher_with_send):
         if len(buf) < 3:
             return
         b = ord(buf[0])
-        fin = b & 0x80      # 1st bit
+        # fin = b & 0x80      # 1st bit
         # next 3 bits reserved
         opcode = b & 0x0f   # low 4 bits
         b2 = ord(buf[1])
@@ -121,7 +132,8 @@ class WebSocketConnection(asyncore.dispatcher_with_send):
             payload_start += 4
 
         if mask:
-            mask_bytes = [ord(b) for b in buf[payload_start:payload_start + 4]]
+            mask_bytes = [ord(mask_b) for mask_b
+                          in buf[payload_start:payload_start + 4]]
             payload_start += 4
 
         # is there a complete frame in the buffer?
@@ -134,8 +146,8 @@ class WebSocketConnection(asyncore.dispatcher_with_send):
 
         # use xor and mask bytes to unmask data
         if mask:
-            unmasked = [mask_bytes[i % 4] ^ ord(b)
-                            for b, i in zip(payload, range(len(payload)))]
+            unmasked = [mask_bytes[i % 4] ^ ord(mask_b) for mask_b, i
+                        in zip(payload, range(len(payload)))]
             payload = "".join([chr(c) for c in unmasked])
 
         if opcode == WebSocketConnection.TEXT:
@@ -222,7 +234,8 @@ class WebSocketServer(asyncore.dispatcher):
 
     def handle_accept(self):
         conn, addr = self.accept()
-        session = WebSocketConnection(conn, self)
+        WebSocketConnection(conn, self)
+
 
 if __name__ == "__main__":
     print "Starting WebSocket Server"
